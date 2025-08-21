@@ -1,0 +1,271 @@
+<!doctype html>
+
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>فيديوهات القناة – تطبيق مصغر تليجرام</title>
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Telegram WebApp SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      /* fallback dark theme */
+      :root {
+        --bg: #0b0f14;
+        --card: #121823;
+        --text: #e6edf3;
+        --muted: #94a3b8;
+        --brand: #2dd4bf;
+      }
+      .glass { backdrop-filter: saturate(140%) blur(10px); }
+    </style>
+  </head>
+  <body class="min-h-screen bg-[var(--bg)] text-[var(--text)]">
+    <div id="app" class="mx-auto max-w-6xl p-4 md:p-8">
+      <!-- Header -->
+      <header class="flex items-center justify-between gap-4 mb-6">
+        <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight">
+          🎬 فيديوهات القناة
+        </h1>
+        <div class="flex items-center gap-2">
+          <button id="toggleManage" class="px-4 py-2 rounded-2xl glass bg-white/5 hover:bg-white/10 transition">
+            إدارة الفيديوهات
+          </button>
+          <button id="openInApp" class="hidden px-4 py-2 rounded-2xl glass bg-white/5 hover:bg-white/10 transition">
+            فتح داخل تليجرام
+          </button>
+        </div>
+      </header><!-- Manage Panel -->
+  <section id="managePanel" class="hidden mb-6">
+    <div class="rounded-3xl p-4 md:p-6 glass bg-[var(--card)]/70 shadow-xl">
+      <h2 class="text-xl font-bold mb-4">أضف فيديو جديد</h2>
+      <form id="addForm" class="grid md:grid-cols-6 gap-3">
+        <input id="titleInput" required class="md:col-span-2 rounded-xl bg-white/5 border border-white/10 px-3 py-2 focus:outline-none focus:ring" placeholder="العنوان" />
+        <input id="urlInput" required class="md:col-span-3 rounded-xl bg-white/5 border border-white/10 px-3 py-2 focus:outline-none focus:ring" placeholder="رابط الفيديو (YouTube أو mp4)" />
+        <button class="md:col-span-1 rounded-xl px-4 py-2 font-semibold bg-[var(--brand)] text-black hover:opacity-90">إضافة</button>
+      </form>
+      <p class="text-sm text-[var(--muted)] mt-2">يدعم روابط YouTube (watch?v= / youtu.be) أو روابط مباشرة لملف MP4.</p>
+    </div>
+  </section>
+
+  <!-- Grid -->
+  <section>
+    <div id="grid" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6"></div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="mt-10 text-center text-sm text-[var(--muted)]">
+    جاهز للنشر كتطبيق مصغر داخل بوت تليجرام أو كموقع عادي.
+  </footer>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-3">
+  <div class="w-full max-w-3xl rounded-2xl overflow-hidden bg-[var(--card)] shadow-2xl">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <h3 id="modalTitle" class="font-bold"></h3>
+      <button id="closeModal" class="rounded-xl px-3 py-1 bg-white/10 hover:bg-white/20">إغلاق</button>
+    </div>
+    <div id="playerWrap" class="aspect-video w-full bg-black"></div>
+  </div>
+</div>
+
+<script>
+  // ========================
+  // 1) قائمة افتراضية يمكنك تعديلها
+  // ========================
+  const DEFAULT_VIDEOS = [
+    { title: "تعريف القناة", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+    { title: "إعلان الحلقة 1", url: "https://samplelib.com/lib/preview/mp4/sample-5s.mp4" },
+    { title: "نشر سريع", url: "https://www.youtube.com/watch?v=ysz5S6PUM-U" }
+  ];
+
+  // ========================
+  // 2) Telegram Mini App theming
+  // ========================
+  const tg = window.Telegram?.WebApp;
+  function applyTelegramTheme() {
+    try {
+      if (!tg) return;
+      tg.ready();
+      tg.expand?.();
+      const p = tg.themeParams || {};
+      const bg = p.bg_color || p.secondary_bg_color || '#0b0f14';
+      const txt = p.text_color || '#e6edf3';
+      const btn = p.button_color || '#2dd4bf';
+      document.documentElement.style.setProperty('--bg', bg);
+      document.documentElement.style.setProperty('--text', txt);
+      document.documentElement.style.setProperty('--brand', btn);
+      // BackButton support (optional)
+      tg.BackButton?.show();
+      tg.onEvent?.('backButtonClicked', () => {
+        if (!hideModal()) window.history.back();
+      });
+    } catch (e) { console.warn(e); }
+  }
+
+  // ========================
+  // 3) تخزين محلي
+  // ========================
+  const KEY = 'userVideos_v1';
+  function loadVideos() {
+    const saved = JSON.parse(localStorage.getItem(KEY) || '[]');
+    return [...DEFAULT_VIDEOS, ...saved];
+  }
+  function addVideo(v) {
+    const saved = JSON.parse(localStorage.getItem(KEY) || '[]');
+    saved.unshift(v);
+    localStorage.setItem(KEY, JSON.stringify(saved));
+  }
+
+  // ========================
+  // 4) أدوات مساعدة
+  // ========================
+  function ytId(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
+      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      const m = u.pathname.match(/\/embed\/([\w-]+)/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+  function isMP4(url) { return /\.mp4($|\?)/i.test(url); }
+
+  function createCard(item, idx) {
+    const card = document.createElement('article');
+    card.className = 'rounded-3xl overflow-hidden bg-[var(--card)] shadow-lg ring-1 ring-white/10 hover:ring-white/20 transition';
+    card.innerHTML = `
+      <div class="relative">
+        <div class="aspect-video w-full bg-black">
+          ${renderThumb(item)}
+        </div>
+        <button class="absolute inset-0 m-auto h-16 w-16 rounded-full bg-black/50 hover:bg-black/60 flex items-center justify-center">
+          <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' class='h-8 w-8 fill-white'><path d='M8 5v14l11-7z'/></svg>
+        </button>
+      </div>
+      <div class="p-4">
+        <h3 class="font-bold line-clamp-2">${escapeHtml(item.title)}</h3>
+        <p class="text-sm text-[var(--muted)] mt-1 break-all">${escapeHtml(item.url)}</p>
+      </div>
+    `;
+    card.addEventListener('click', () => openPlayer(item));
+    return card;
+  }
+
+  function renderThumb(item) {
+    const id = ytId(item.url);
+    if (id) {
+      const src = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+      return `<img src="${src}" alt="thumb" class="h-full w-full object-cover" loading="lazy"/>`;
+    }
+    // fallback for mp4: show a simple poster
+    return `<div class='h-full w-full grid place-items-center text-sm text-white/60'>MP4</div>`;
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"]\/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  // ========================
+  // 5) الرسم الأولي
+  // ========================
+  const grid = document.getElementById('grid');
+  function renderGrid() {
+    grid.innerHTML = '';
+    const list = loadVideos();
+    list.forEach((item, idx) => grid.appendChild(createCard(item, idx)));
+  }
+
+  // ========================
+  // 6) المشغل داخل مودال
+  // ========================
+  const modal = document.getElementById('modal');
+  const modalTitle = document.getElementById('modalTitle');
+  const playerWrap = document.getElementById('playerWrap');
+  const closeModalBtn = document.getElementById('closeModal');
+
+  function openPlayer(item) {
+    modalTitle.textContent = item.title;
+    const id = ytId(item.url);
+    if (id) {
+      playerWrap.innerHTML = `<iframe allowfullscreen class='w-full h-full' src="https://www.youtube.com/embed/${id}?rel=0&modestbranding=1"></iframe>`;
+    } else if (isMP4(item.url)) {
+      playerWrap.innerHTML = `<video class='w-full h-full' src="${item.url}" controls playsinline></video>`;
+    } else {
+      playerWrap.innerHTML = `<div class='w-full h-full grid place-items-center text-center p-4'>لا يمكن تشغيل هذا الرابط مباشرة. برجاء وضع رابط YouTube أو ملف MP4 مباشر.</div>`;
+    }
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  }
+
+  function hideModal(){
+    if (modal.classList.contains('hidden')) return false;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    playerWrap.innerHTML='';
+    return true;
+  }
+
+  closeModalBtn.addEventListener('click', hideModal);
+  modal.addEventListener('click', (e)=>{ if(e.target===modal) hideModal(); });
+
+  // ========================
+  // 7) إدارة الفيديوهات
+  // ========================
+  const panel = document.getElementById('managePanel');
+  const toggleBtn = document.getElementById('toggleManage');
+  const addForm = document.getElementById('addForm');
+  const titleInput = document.getElementById('titleInput');
+  const urlInput = document.getElementById('urlInput');
+
+  toggleBtn.addEventListener('click', ()=>{
+    panel.classList.toggle('hidden');
+  });
+
+  addForm.addEventListener('submit', (e)=>{
+    e.preventDefault();
+    const title = titleInput.value.trim();
+    const url = urlInput.value.trim();
+    if(!title || !url) return;
+    addVideo({title, url});
+    titleInput.value=''; urlInput.value='';
+    renderGrid();
+  });
+
+  // ========================
+  // 8) روابط سريعة عبر URL
+  //    مثال: ?title=فيديو&src=https://...mp4
+  // ========================
+  (function quickAddFromQuery(){
+    const q = new URLSearchParams(location.search);
+    const src = q.get('src');
+    const title = q.get('title');
+    if (src && title) {
+      addVideo({title, url: src});
+      const url = new URL(location.href);
+      url.search = '';
+      history.replaceState({}, '', url);
+    }
+  })();
+
+  // ========================
+  // 9) زر فتح داخل التليجرام (عند العرض خارج التليجرام)
+  // ========================
+  const openInAppBtn = document.getElementById('openInApp');
+  if (!tg) {
+    // لو خارج تليجرام، يظهر زر ارشادي فقط
+    openInAppBtn.classList.remove('hidden');
+    openInAppBtn.addEventListener('click', ()=>{
+      alert('انشر هذا الرابط داخل بوت تليجرام كـ WebApp لفتحه داخل التطبيق.');
+    });
+  }
+
+  // start
+  applyTelegramTheme();
+  renderGrid();
+</script>
+
+  </body>
+            </html>
